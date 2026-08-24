@@ -155,8 +155,10 @@ small_llm = ChatGroq(
     model=settings.groq_small_model,
     temperature=settings.groq_temperature,
     # Reasoning models spend hidden tokens before the visible answer; leave
-    # headroom so a short specialist reply never gets truncated.
+    # headroom so a short specialist reply never gets truncated, and cap the
+    # reasoning effort so tiny slices do not pay for deep thinking.
     max_tokens=768,
+    reasoning_effort="low",
 )
 router_llm_small = ChatGroq(
     # Classification must stay deterministic; never reuse a creative instance.
@@ -164,6 +166,7 @@ router_llm_small = ChatGroq(
     model=settings.groq_small_model,
     temperature=0,
     max_tokens=512,
+    reasoning_effort="low",
 )
 synthesizer_llm = ChatGroq(
     api_key=settings.groq_api_key,
@@ -367,7 +370,10 @@ SPECIALIST_PROMPTS = {
 
 def make_specialist(domain: str):
     def specialist_node(state: MultiAgentState) -> dict:
-        if not state.get("has_record"):
+        # Selective fan-out: only run when the router marked this domain AND
+        # the record actually holds data for it.
+        selected = state.get("domains") or list(DOMAINS)
+        if not state.get("has_record") or domain not in selected:
             return {"specialist_outputs": {domain: ""}}
         slice_text = state.get("domain_slices", {}).get(domain, "")
         if not slice_text:
@@ -413,9 +419,25 @@ def synthesizer(state: MultiAgentState) -> dict:
         # zero LLM calls instead of synthesizing over a canned message.
         return {}
     outputs = state.get("specialist_outputs", {})
+    notes_map = {name: text for name, text in outputs.items() if text}
+    if len(notes_map) == 1:
+        # Adaptive cascade: a single-domain question needs no synthesis hop —
+        # the specialist's grounded answer IS the final answer. Saves one
+        # large-model round trip on the most common query shape.
+        (only,) = notes_map.values()
+        return {"messages": [AIMessage(content=only)]}
     notes = "\n\n".join(
         f"[Catatan {name}]\n{text}" for name, text in outputs.items() if text
     )
+    if not notes:
+        return {
+            "messages": [AIMessage(
+                content=(
+                    "Maaf, informasi yang Anda minta tidak tersedia di data "
+                    "kunjungan ini. Silakan konfirmasi ke dokter yang merawat."
+                )
+            )]
+        }
     system_text = SYSTEM_PROMPT
     if state.get("patient_name"):
         system_text += f"\nPasien yang terhubung: {state['patient_name']}. Bisa menyapanya dengan nama."
