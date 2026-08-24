@@ -1,4 +1,5 @@
 from typing import Literal
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -8,6 +9,8 @@ from app.graph_registry import get_chat_graph
 from app.guardrails import DISCLAIMER, STREAM_FALLBACK_REPLY
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 
 class Message(BaseModel):
@@ -52,6 +55,7 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
                     if hasattr(chunk, "content") and chunk.content:
                         yield chunk.content
     except Exception:
+        logger.exception("Chat stream failed")
         # Headers are already sent at this point; never let the client render
         # silence as a complete answer.
         yield STREAM_FALLBACK_REPLY
@@ -82,6 +86,7 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
             "token": request.token,
         })
     except Exception:
+        logger.exception("Chat invoke failed")
         raise HTTPException(
             status_code=502,
             detail="Layanan chat sedang bermasalah. Silakan coba lagi.",

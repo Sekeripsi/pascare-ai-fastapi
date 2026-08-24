@@ -41,17 +41,18 @@ class UsageCounter(BaseCallbackHandler):
         usage = getattr(response, "usage_metadata", None)
         if not usage:
             llm_usage = (getattr(response, "llm_output", None) or {}).get("token_usage") or {}
-            usage = {
-                "input_tokens": llm_usage.get("prompt_tokens", 0),
-                "output_tokens": llm_usage.get("completion_tokens", 0),
-                "total_tokens": llm_usage.get("total_tokens", 0),
-            }
+            if llm_usage:
+                usage = {
+                    "input_tokens": llm_usage.get("prompt_tokens", 0),
+                    "output_tokens": llm_usage.get("completion_tokens", 0),
+                    "total_tokens": llm_usage.get("total_tokens", 0),
+                }
         if not usage:
             try:
                 msg = response.generations[0][0].message
-                usage = getattr(msg, "usage_metadata", None) or {}
+                usage = getattr(msg, "usage_metadata", None)
             except (IndexError, AttributeError):
-                usage = {}
+                usage = None
         self.calls += 1
         self.input_tokens += int(usage.get("input_tokens", 0))
         self.output_tokens += int(usage.get("output_tokens", 0))
@@ -113,10 +114,13 @@ def load_graphs(variants: list[str]) -> dict:
 
 
 def run_turn(graph, messages: list[dict], token: str | None, pace_s: float = 0.0) -> dict:
-    counter = UsageCounter()
+    result = None
     for attempt in range(5):
         if pace_s:
             time.sleep(pace_s)  # stay under the free-tier tokens-per-minute cap
+        # Fresh counter per attempt: a 429 mid-graph would otherwise leave
+        # partial usage from the aborted run on the recorded sample.
+        counter = UsageCounter()
         start = time.perf_counter()
         try:
             result = graph.invoke(
@@ -142,6 +146,7 @@ def run_turn(graph, messages: list[dict], token: str | None, pace_s: float = 0.0
         "output_tokens": counter.output_tokens,
         "total_tokens": counter.total_tokens,
         "reply_excerpt": content[:120].replace("\n", " "),
+        "_reply": content,
     }
 
 
@@ -151,7 +156,11 @@ def run_scenario(graph, scenario: dict, token: str | None, pace_s: float = 0.0) 
     turns = []
     totals = {"latency_s": 0.0, "llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     scen_token = scenario.get("token", "valid")
-    for user_text in scenario["turns"]:
+    for turn_idx, user_text in enumerate(scenario["turns"]):
+        if turn_idx > 0:
+            # Real conversation shape: the previous assistant reply precedes
+            # this user turn, exactly like the API contract requires.
+            messages.append({"role": "assistant", "content": turns[-1]["_reply"]})
         messages.append({"role": "user", "content": user_text})
         used_token = token if scen_token == "valid" else scen_token
         metrics = run_turn(graph, list(messages), used_token, pace_s=pace_s)
@@ -204,9 +213,9 @@ def main():
                 sample = outcome
             med = statistics.median(run_latencies)
             grand["latencies"].append(med)
-            grand["calls"] += calls // args.runs
-            grand["in_tok"] += in_tok // args.runs
-            grand["out_tok"] += out_tok // args.runs
+            grand["calls"] += calls / args.runs
+            grand["in_tok"] += in_tok / args.runs
+            grand["out_tok"] += out_tok / args.runs
             variant_results[scenario["name"]] = {
                 "median_latency_s": round(med, 3),
                 "mean_calls_per_req": round(calls / args.runs, 2),
@@ -214,24 +223,25 @@ def main():
                 "mean_output_tokens": round(out_tok / args.runs),
                 "sample_reply": sample["turns"][0]["reply_excerpt"],
             }
-            print(f"{scenario['name']:24s} med={med:6.2f}s  calls={calls // args.runs:2d}  "
-                  f"in={in_tok // args.runs:6d}  out={out_tok // args.runs:5d}")
+            print(f"{scenario['name']:24s} med={med:6.2f}s  calls={calls / args.runs:5.2f}  "
+                  f"in={in_tok / args.runs:8.1f}  out={out_tok / args.runs:7.1f}")
         n = len(scenarios) or 1
         results["variants"][variant] = {
             "per_scenario": variant_results,
             "totals": {
                 "mean_latency_s": round(statistics.mean(grand["latencies"]), 3),
                 "median_latency_s": round(statistics.median(grand["latencies"]), 3),
-                "total_calls": grand["calls"],
-                "total_input_tokens": grand["in_tok"],
-                "total_output_tokens": grand["out_tok"],
-                "grand_total_tokens": grand["in_tok"] + grand["out_tok"],
+                "total_calls": round(grand["calls"], 2),
+                "total_input_tokens": round(grand["in_tok"]),
+                "total_output_tokens": round(grand["out_tok"]),
+                "grand_total_tokens": round(grand["in_tok"] + grand["out_tok"]),
             },
         }
         print(f"-- totals: mean={statistics.mean(grand['latencies']):.2f}s "
-              f"in={grand['in_tok']} out={grand['out_tok']}\n")
+              f"in={grand['in_tok']:.0f} out={grand['out_tok']:.0f}\n")
 
-    out_path = Path(__file__).parent.parent / "benchmark_results.json"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = Path(__file__).parent.parent / f"benchmark_results_{stamp}.json"
     out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved: {out_path}")
 

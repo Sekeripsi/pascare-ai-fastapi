@@ -3,4 +3,4 @@
 __pycache__/
 .env
 *.pyc
-benchmark_results.json
+benchmark_results*.json
