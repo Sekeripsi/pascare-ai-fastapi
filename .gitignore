@@ -1,0 +1,6 @@
+.vercel
+.venv/
+__pycache__/
+.env
+*.pyc
+benchmark_results.json
