@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.agents import chat_graph
+from app.graph_registry import get_chat_graph
 from app.guardrails import DISCLAIMER, STREAM_FALLBACK_REPLY
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -41,7 +41,8 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
         "token": token,
     }
     try:
-        for event in chat_graph.stream(state, stream_mode="updates"):
+        graph = get_chat_graph()
+        for event in graph.stream(state, stream_mode="updates"):
             for node_name, node_output in event.items():
                 msgs = node_output.get("messages", [])
                 if msgs:
@@ -72,7 +73,7 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
         )
 
     try:
-        result = chat_graph.invoke({
+        result = get_chat_graph().invoke({
             "messages": messages,
             "patient_id": None,
             "rekam_medis_id": None,

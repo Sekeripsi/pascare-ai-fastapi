@@ -31,6 +31,12 @@ class Settings:
     # Low default on purpose: grounded record Q&A, not creative generation.
     groq_temperature: float = float(os.getenv("GROQ_TEMPERATURE", "0.2"))
     groq_max_tokens: int = int(os.getenv("GROQ_MAX_TOKENS", "1024"))
+    # Small/fast Groq model for router + specialist agents (free tier).
+    # gpt-oss-20b chosen over llama-3.1-8b-instant (delisted) and
+    # qwen3.6-27b (<think> tags + reasoning hits the token cap).
+    groq_small_model: str = os.getenv("GROQ_SMALL_MODEL", "openai/gpt-oss-20b")
+    # Which chat graph serves requests: baseline | multi
+    graph_variant: str = os.getenv("GRAPH_VARIANT", "baseline")
     system_prompt: str = os.getenv("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
 
