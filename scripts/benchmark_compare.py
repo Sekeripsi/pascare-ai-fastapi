@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from groq import RateLimitError
 from langchain_core.callbacks import BaseCallbackHandler
 
 from app.config import settings
@@ -111,13 +112,26 @@ def load_graphs(variants: list[str]) -> dict:
     return graphs
 
 
-def run_turn(graph, messages: list[dict], token: str | None) -> dict:
+def run_turn(graph, messages: list[dict], token: str | None, pace_s: float = 0.0) -> dict:
     counter = UsageCounter()
-    start = time.perf_counter()
-    result = graph.invoke(
-        {"messages": messages, "patient_id": None, "rekam_medis_id": None, "token": token},
-        config={"callbacks": [counter]},
-    )
+    for attempt in range(5):
+        if pace_s:
+            time.sleep(pace_s)  # stay under the free-tier tokens-per-minute cap
+        start = time.perf_counter()
+        try:
+            result = graph.invoke(
+                {"messages": messages, "patient_id": None, "rekam_medis_id": None,
+                 "token": token},
+                config={"callbacks": [counter]},
+            )
+        except RateLimitError as exc:
+            wait = min(2 ** attempt * 8, 60)
+            print(f"    429 rate-limited, waiting {wait}s ({exc})")
+            time.sleep(wait)
+            continue
+        break
+    else:
+        raise SystemExit("Rate limit persisted after retries; lower --pace and rerun.")
     elapsed = time.perf_counter() - start
     last = result["messages"][-1]
     content = last.content if isinstance(last.content, str) else str(last.content)
@@ -131,7 +145,7 @@ def run_turn(graph, messages: list[dict], token: str | None) -> dict:
     }
 
 
-def run_scenario(graph, scenario: dict, token: str | None) -> dict:
+def run_scenario(graph, scenario: dict, token: str | None, pace_s: float = 0.0) -> dict:
     """Run all turns sequentially; later turns see earlier replies as history."""
     messages: list[dict] = []
     turns = []
@@ -140,7 +154,7 @@ def run_scenario(graph, scenario: dict, token: str | None) -> dict:
     for user_text in scenario["turns"]:
         messages.append({"role": "user", "content": user_text})
         used_token = token if scen_token == "valid" else scen_token
-        metrics = run_turn(graph, list(messages), used_token)
+        metrics = run_turn(graph, list(messages), used_token, pace_s=pace_s)
         turns.append(metrics)
         for key in totals:
             totals[key] += metrics[key]
@@ -150,7 +164,11 @@ def run_scenario(graph, scenario: dict, token: str | None) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=0, help="only first N scenarios")
-    parser.add_argument("--runs", type=int, default=2, help="runs per variant (median reported)")
+    parser.add_argument("--runs", type=int, default=1, help="runs per variant (median reported)")
+    parser.add_argument(
+        "--pace", type=float, default=6.0,
+        help="sleep before each request; keeps free-tier TPM (8000) happy",
+    )
     parser.add_argument("--variants", type=str, default="baseline,multi")
     args = parser.parse_args()
 
@@ -178,7 +196,7 @@ def main():
             run_latencies, sample = [], None
             calls = in_tok = out_tok = 0
             for _ in range(args.runs):
-                outcome = run_scenario(graph, scenario, token)
+                outcome = run_scenario(graph, scenario, token, pace_s=args.pace)
                 run_latencies.append(outcome["latency_s"])
                 calls += outcome["llm_calls"]
                 in_tok += outcome["input_tokens"]

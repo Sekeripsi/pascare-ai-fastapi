@@ -44,6 +44,8 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
         graph = get_chat_graph()
         for event in graph.stream(state, stream_mode="updates"):
             for node_name, node_output in event.items():
+                if not node_output:
+                    continue
                 msgs = node_output.get("messages", [])
                 if msgs:
                     chunk = msgs[-1]

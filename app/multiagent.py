@@ -417,7 +417,9 @@ def synthesizer(state: MultiAgentState) -> dict:
         # Skip path: load_record already appended the deterministic NO_DATA
         # reply; the fan-in edges still route through here, so bow out with
         # zero LLM calls instead of synthesizing over a canned message.
-        return {}
+        # Empty list (not {}) because a bare dict serializes as a None update
+        # in stream mode and would break consumers that read node_output.
+        return {"messages": []}
     outputs = state.get("specialist_outputs", {})
     notes_map = {name: text for name, text in outputs.items() if text}
     if len(notes_map) == 1:
