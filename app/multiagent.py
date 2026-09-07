@@ -103,11 +103,14 @@ def build_domain_slices(rows: list[dict]) -> dict[str, str]:
         if _has(row, "tindakan", "pengobatan"):
             filled["pengobatan"] = True
 
+        catatan_dokter = _fmt(row.get("catatan_dokter"))
+        nama_dokter = _fmt(row.get("nama_dokter"))
         parts["rencana"].append(
             f"Tanggal: {tanggal}\nStatus pulang: {_fmt(row.get('status_pulang'))}\n"
-            f"KIE: {_fmt(row.get('kie'))}\nRencana: {_fmt(row.get('plan'))}"
+            f"KIE: {_fmt(row.get('kie'))}\nRencana: {_fmt(row.get('plan'))}\n"
+            f"Catatan Dokter ({nama_dokter}): {catatan_dokter}"
         )
-        if _has(row, "status_pulang", "kie", "plan"):
+        if _has(row, "status_pulang", "kie", "plan", "catatan_dokter"):
             filled["rencana"] = True
 
     return {
@@ -138,6 +141,7 @@ from app.agents import (
 from app.config import settings
 from app.database import (
     Anamnesis,
+    CatatanDokter,
     Diagnosis,
     Pendaftaran,
     Pasien,
@@ -199,7 +203,8 @@ MULTI_ROUTER_PROMPT = (
     "\n"
     "Kategori:\n"
     "- 'rekam_medis': menyangkut isi kunjungan medis — keluhan, diagnosa, kode ICD, hasil "
-    "pemeriksaan (tekanan darah, suhu, nadi), tindakan, pengobatan/resep, jadwal kontrol, rujukan.\n"
+    "pemeriksaan (tekanan darah, suhu, nadi), tindakan, pengobatan/resep, catatan dokter, "
+    "jadwal kontrol, rujukan.\n"
     "- 'general': sapaan, ucapan terima kasih, atau pertanyaan tentang cara pakai layanan ini.\n"
     "- 'out_of_scope': permintaan di luar layanan — coding, berita, lelucon, tugas sekolah, "
     "atau penjelasan/nasihat medis umum yang tidak menyangkut data kunjungan.\n"
@@ -209,7 +214,7 @@ MULTI_ROUTER_PROMPT = (
     "- diagnosa: keluhan, diagnosa, kode ICD\n"
     "- pemeriksaan: tekanan darah, suhu, nadi, respirasi, keadaan umum\n"
     "- pengobatan: tindakan medis dan obat/resep\n"
-    "- rencana: status pulang, anjuran KIE, jadwal kontrol, rujukan\n"
+    "- rencana: status pulang, anjuran KIE, catatan dokter, jadwal kontrol, rujukan\n"
     "Jika bukan rekam_medis tulis persis: domains: -\n"
     "\n"
     "Contoh:\n"
@@ -292,6 +297,8 @@ def load_record(state: MultiAgentState) -> dict:
                 PulangRujuk.c.statusPulang.label("status_pulang"),
                 PulangRujuk.c.kie.label("kie"),
                 PulangRujuk.c.plan.label("plan"),
+                CatatanDokter.c.catatan.label("catatan_dokter"),
+                CatatanDokter.c.namaDokter.label("nama_dokter"),
             )
             .select_from(RekamMedis)
             .outerjoin(Pasien, RekamMedis.c.pasienId == Pasien.c.id)
@@ -302,30 +309,33 @@ def load_record(state: MultiAgentState) -> dict:
             .outerjoin(Tindakan, RekamMedis.c.tindakanId == Tindakan.c.id)
             .outerjoin(Pengobatan, RekamMedis.c.pengobatanId == Pengobatan.c.id)
             .outerjoin(PulangRujuk, RekamMedis.c.pulangRujukId == PulangRujuk.c.id)
+            .outerjoin(CatatanDokter, RekamMedis.c.catatanDokterId == CatatanDokter.c.id)
             .where(RekamMedis.c.id.in_(rekam_filter_ids))
             .order_by(Pendaftaran.c.tglKunjungan.desc())
         )
         rows = db.execute(stmt).mappings().all()
         record_rows = [
             {
-                "pasien_nama": row["pasien_nama"],
-                "tanggal": str(row["tanggal"]) if row["tanggal"] else None,
-                "poliklinik": row["poliklinik"],
-                "keluhan": row["keluhan"],
-                "diagnosa": row["diagnosa"],
-                "kode_icd": row["kode_icd"],
-                "suhu": row["suhu"],
-                "nadi": row["nadi"],
-                "respirasi": row["respirasi"],
-                "sistol": row["sistol"],
-                "diastol": row["diastol"],
-                "keadaan": row["keadaan"],
-                "kesadaran": row["kesadaran"],
-                "tindakan": row["tindakan"],
-                "pengobatan": row["pengobatan"],
-                "status_pulang": row["status_pulang"],
-                "kie": row["kie"],
-                "plan": row["plan"],
+                "pasien_nama": row.get("pasien_nama"),
+                "tanggal": str(row.get("tanggal")) if row.get("tanggal") else None,
+                "poliklinik": row.get("poliklinik"),
+                "keluhan": row.get("keluhan"),
+                "diagnosa": row.get("diagnosa"),
+                "kode_icd": row.get("kode_icd"),
+                "suhu": row.get("suhu"),
+                "nadi": row.get("nadi"),
+                "respirasi": row.get("respirasi"),
+                "sistol": row.get("sistol"),
+                "diastol": row.get("diastol"),
+                "keadaan": row.get("keadaan"),
+                "kesadaran": row.get("kesadaran"),
+                "tindakan": row.get("tindakan"),
+                "pengobatan": row.get("pengobatan"),
+                "status_pulang": row.get("status_pulang"),
+                "kie": row.get("kie"),
+                "plan": row.get("plan"),
+                "catatan_dokter": row.get("catatan_dokter"),
+                "nama_dokter": row.get("nama_dokter"),
             }
             for row in rows
         ]
@@ -368,7 +378,7 @@ SPECIALIST_PROMPTS = {
     ),
     "rencana": (
         "Anda agen spesialis RENCANA pasca-kunjungan: menjelaskan status pulang, anjuran "
-        "KIE, rencana kontrol, dan rujukan sesuai catatan."
+        "KIE, catatan dokter, rencana kontrol, dan rujukan sesuai catatan."
     ),
 }
 

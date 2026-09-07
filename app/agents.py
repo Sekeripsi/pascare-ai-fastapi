@@ -19,6 +19,7 @@ from app.database import (
     Pengobatan,
     PulangRujuk,
     PostVisit,
+    CatatanDokter,
 )
 from app.guardrails import (
     CRISIS_REPLY,
@@ -136,7 +137,7 @@ ROUTER_PROMPT = (
     "Klasifikasikan pesan TERAKHIR pasien ke salah satu kategori:\n"
     "- 'rekam_medis': menyangkut isi kunjungan medis — keluhan, diagnosa, kode ICD, "
     "hasil pemeriksaan (tekanan darah, suhu, nadi), tindakan, pengobatan/resep obat, "
-    "jadwal kontrol, rujukan, status pulang.\n"
+    "catatan dokter, jadwal kontrol, rujukan, status pulang.\n"
     "- 'general': sapaan, ucapan terima kasih, atau pertanyaan tentang cara pakai layanan ini.\n"
     "- 'out_of_scope': permintaan di luar layanan ini — coding, berita, lelucon, tugas "
     "sekolah, atau penjelasan/nasihat medis umum yang tidak menyangkut data kunjungan.\n"
@@ -222,6 +223,8 @@ def rekam_medis_agent(state: State) -> dict:
                 PulangRujuk.c.statusPulang.label("status_pulang"),
                 PulangRujuk.c.kie.label("kie"),
                 PulangRujuk.c.plan.label("plan"),
+                CatatanDokter.c.catatan.label("catatan_dokter"),
+                CatatanDokter.c.namaDokter.label("nama_dokter"),
             )
             .select_from(RekamMedis)
             .outerjoin(Pasien, RekamMedis.c.pasienId == Pasien.c.id)
@@ -232,6 +235,7 @@ def rekam_medis_agent(state: State) -> dict:
             .outerjoin(Tindakan, RekamMedis.c.tindakanId == Tindakan.c.id)
             .outerjoin(Pengobatan, RekamMedis.c.pengobatanId == Pengobatan.c.id)
             .outerjoin(PulangRujuk, RekamMedis.c.pulangRujukId == PulangRujuk.c.id)
+            .outerjoin(CatatanDokter, RekamMedis.c.catatanDokterId == CatatanDokter.c.id)
             .order_by(Pendaftaran.c.tglKunjungan.desc())
         )
 
@@ -246,56 +250,63 @@ def rekam_medis_agent(state: State) -> dict:
         context_parts = []
 
         for row in rows:
-            nama = row["pasien_nama"] or "-"
-            tanggal = row["tanggal"].strftime("%d %B %Y") if row["tanggal"] else "-"
+            nama = row.get("pasien_nama") or "-"
+            tanggal = row.get("tanggal").strftime("%d %B %Y") if row.get("tanggal") else "-"
             context_parts.append(f"Pasien: {nama}")
             context_parts.append(
-                f"  Tanggal: {tanggal} | Poliklinik: {row['poliklinik'] or '-'} | "
-                f"Kehadiran: {row['kehadiran'] or '-'} | Target: {row['target_status'] or '-'}"
+                f"  Tanggal: {tanggal} | Poliklinik: {row.get('poliklinik') or '-'} | "
+                f"Kehadiran: {row.get('kehadiran') or '-'} | Target: {row.get('target_status') or '-'}"
             )
             context_parts.append(
-                f"  Keluhan: {row['keluhan'] or '-'}"
+                f"  Keluhan: {row.get('keluhan') or '-'}"
             )
             context_parts.append(
-                f"  Diagnosa: {row['diagnosa'] or '-'} (Kode ICD: {row['kode_icd'] or '-'})"
+                f"  Diagnosa: {row.get('diagnosa') or '-'} (Kode ICD: {row.get('kode_icd') or '-'})"
             )
-            if row["suhu"] or row["sistol"] or row["nadi"]:
+            if row.get("suhu") or row.get("sistol") or row.get("nadi"):
                 context_parts.append(
-                    f"  Pemeriksaan: Suhu {row['suhu'] or '-'}°C, Nadi {row['nadi'] or '-'}x/menit, "
-                    f"Tekanan Darah {row['sistol'] or '-'}/{row['diastol'] or '-'} mmHg, "
-                    f"Respirasi {row['respirasi'] or '-'}x/menit, Keadaan {row['keadaan'] or '-'}, Kesadaran {row['kesadaran'] or '-'}"
+                    f"  Pemeriksaan: Suhu {row.get('suhu') or '-'}°C, Nadi {row.get('nadi') or '-'}x/menit, "
+                    f"Tekanan Darah {row.get('sistol') or '-'}/{row.get('diastol') or '-'} mmHg, "
+                    f"Respirasi {row.get('respirasi') or '-'}x/menit, Keadaan {row.get('keadaan') or '-'}, Kesadaran {row.get('kesadaran') or '-'}"
                 )
-            context_parts.append(f"  Tindakan: {row['tindakan'] or '-'}")
-            context_parts.append(f"  Pengobatan: {row['pengobatan'] or '-'}")
-            if row["status_pulang"]:
+            context_parts.append(f"  Tindakan: {row.get('tindakan') or '-'}")
+            context_parts.append(f"  Pengobatan: {row.get('pengobatan') or '-'}")
+            if row.get("status_pulang"):
                 context_parts.append(
-                    f"  Pulang: Status {row['status_pulang']}, KIE: {row['kie'] or '-'}, Plan: {row['plan'] or '-'}"
+                    f"  Pulang: Status {row.get('status_pulang')}, KIE: {row.get('kie') or '-'}, Plan: {row.get('plan') or '-'}"
+                )
+            if row.get("catatan_dokter"):
+                dokter = row.get("nama_dokter") or "Dokter"
+                context_parts.append(
+                    f"  Catatan Dokter ({dokter}): {row.get('catatan_dokter')}"
                 )
             context_parts.append("")
 
             rekam_results.append({
                 "pasien_nama": nama,
-                "tanggal": str(row["tanggal"]) if row["tanggal"] else None,
-                "no_antrian": row["no_antrian"],
-                "poliklinik": row["poliklinik"],
-                "kehadiran": row["kehadiran"],
-                "target_status": row["target_status"],
-                "pembayaran": row["pembayaran"],
-                "keluhan": row["keluhan"],
-                "diagnosa": row["diagnosa"],
-                "kode_icd": row["kode_icd"],
-                "suhu": row["suhu"],
-                "nadi": row["nadi"],
-                "respirasi": row["respirasi"],
-                "sistol": row["sistol"],
-                "diastol": row["diastol"],
-                "keadaan": row["keadaan"],
-                "kesadaran": row["kesadaran"],
-                "tindakan": row["tindakan"],
-                "pengobatan": row["pengobatan"],
-                "status_pulang": row["status_pulang"],
-                "kie": row["kie"],
-                "plan": row["plan"],
+                "tanggal": str(row.get("tanggal")) if row.get("tanggal") else None,
+                "no_antrian": row.get("no_antrian"),
+                "poliklinik": row.get("poliklinik"),
+                "kehadiran": row.get("kehadiran"),
+                "target_status": row.get("target_status"),
+                "pembayaran": row.get("pembayaran"),
+                "keluhan": row.get("keluhan"),
+                "diagnosa": row.get("diagnosa"),
+                "kode_icd": row.get("kode_icd"),
+                "suhu": row.get("suhu"),
+                "nadi": row.get("nadi"),
+                "respirasi": row.get("respirasi"),
+                "sistol": row.get("sistol"),
+                "diastol": row.get("diastol"),
+                "keadaan": row.get("keadaan"),
+                "kesadaran": row.get("kesadaran"),
+                "tindakan": row.get("tindakan"),
+                "pengobatan": row.get("pengobatan"),
+                "status_pulang": row.get("status_pulang"),
+                "kie": row.get("kie"),
+                "plan": row.get("plan"),
+                "catatan_dokter": row.get("catatan_dokter"),
+                "nama_dokter": row.get("nama_dokter"),
             })
 
         if not rekam_results:
