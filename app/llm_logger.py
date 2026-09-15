@@ -2,45 +2,20 @@
 
 Captures TTFT (time to first streamed token), total latency (synthesizer/
 orchestrator finish), and prompt/completion token counts from every LLM
-call in the chain. Records are appended to a CSV at metrics/llm_log.csv.
-
-Columns: scenario_id, agent, ttft_s, total_latency_s, prompt_tokens,
-completion_tokens, total_tokens, llm_calls, graph_variant, timestamp
+call in the chain. Records are inserted into the `llm_metrics` Supabase
+table via the REST API.
 """
-import csv
 import os
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 
+import requests
 from langchain_core.callbacks import BaseCallbackHandler
 
 from app.config import settings
 
-
-CSV_DIR = Path(os.getenv("LLM_LOG_DIR", "metrics"))
-CSV_PATH = CSV_DIR / "llm_log.csv"
-
-CSV_FIELDS = [
-    "scenario_id",
-    "agent",
-    "ttft_s",
-    "total_latency_s",
-    "prompt_tokens",
-    "completion_tokens",
-    "total_tokens",
-    "llm_calls",
-    "graph_variant",
-    "timestamp",
-]
-
-
-def _ensure_csv():
-    CSV_DIR.mkdir(parents=True, exist_ok=True)
-    if not CSV_PATH.exists():
-        with CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=CSV_FIELDS).writeheader()
+SUPABASE_URL = os.getenv("SUPABASE_URL", os.getenv("VITE_SUPABASE_URL", ""))
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", os.getenv("VITE_SUPABASE_ANON_KEY", ""))
 
 
 class RequestMetrics:
@@ -90,21 +65,34 @@ class RequestMetrics:
         return round(self._t_end, 4) if self._t_end is not None else None
 
     def write(self):
-        _ensure_csv()
+        """Insert this record into the llm_metrics Supabase table."""
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            return
         row = {
             "scenario_id": self.scenario_id,
             "agent": ";".join(self.agents) if self.agents else "-",
-            "ttft_s": self.ttft_s if self.ttft_s is not None else "",
-            "total_latency_s": self.total_latency_s if self.total_latency_s is not None else "",
+            "ttft_s": self.ttft_s,
+            "total_latency_s": self.total_latency_s,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "llm_calls": self.llm_calls,
             "graph_variant": self.graph_variant,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        with CSV_PATH.open("a", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=CSV_FIELDS).writerow(row)
+        try:
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/llm_metrics",
+                json=row,
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                timeout=5,
+            )
+        except Exception:
+            pass
 
 
 class LLMMetricsCallback(BaseCallbackHandler):
@@ -114,7 +102,6 @@ class LLMMetricsCallback(BaseCallbackHandler):
         self.metrics = metrics
 
     def on_llm_start(self, serialized, prompts, **kwargs) -> None:
-        # Record the agent name from the invocation tags / metadata.
         tags = kwargs.get("tags") or []
         if tags:
             self.metrics.agents.append(tags[0])
