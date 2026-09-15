@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.graph_registry import get_chat_graph
 from app.guardrails import DISCLAIMER, STREAM_FALLBACK_REPLY
+from app.llm_logger import LLMMetricsCallback, RequestMetrics
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -37,6 +38,9 @@ class ChatResponse(BaseModel):
 
 
 async def _stream_reply(messages: list[dict], token: str | None = None):
+    metrics = RequestMetrics()
+    metrics.start()
+    callback = LLMMetricsCallback(metrics)
     state = {
         "messages": messages,
         "patient_id": None,
@@ -45,7 +49,8 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
     }
     try:
         graph = get_chat_graph()
-        for event in graph.stream(state, stream_mode="updates"):
+        first = True
+        for event in graph.stream(state, stream_mode="updates", config={"callbacks": [callback]}):
             for node_name, node_output in event.items():
                 if not node_output:
                     continue
@@ -53,12 +58,18 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
                 if msgs:
                     chunk = msgs[-1]
                     if hasattr(chunk, "content") and chunk.content:
+                        if first:
+                            metrics.mark_first_token()
+                            first = False
                         yield chunk.content
     except Exception:
         logger.exception("Chat stream failed")
         # Headers are already sent at this point; never let the client render
         # silence as a complete answer.
         yield STREAM_FALLBACK_REPLY
+    finally:
+        metrics.mark_done()
+        metrics.write()
     yield f"\n\n{DISCLAIMER}"
 
 
@@ -78,19 +89,25 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
             media_type="text/plain",
         )
 
+    metrics = RequestMetrics()
+    metrics.start()
+    callback = LLMMetricsCallback(metrics)
     try:
         result = get_chat_graph().invoke({
             "messages": messages,
             "patient_id": None,
             "rekam_medis_id": None,
             "token": request.token,
-        })
+        }, config={"callbacks": [callback]})
     except Exception:
         logger.exception("Chat invoke failed")
         raise HTTPException(
             status_code=502,
             detail="Layanan chat sedang bermasalah. Silakan coba lagi.",
         )
+    finally:
+        metrics.mark_done()
+        metrics.write()
 
     last = result["messages"][-1]
     content = last.content if hasattr(last, "content") else str(last)
