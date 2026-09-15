@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app import graph_monitoring_config
 from app.graph_registry import get_chat_graph
 from app.guardrails import DISCLAIMER, STREAM_FALLBACK_REPLY
 from app.llm_logger import LLMMetricsCallback, RequestMetrics
@@ -50,7 +51,11 @@ async def _stream_reply(messages: list[dict], token: str | None = None):
     try:
         graph = get_chat_graph()
         first = True
-        for event in graph.stream(state, stream_mode="updates", config={"callbacks": [callback]}):
+        for event in graph.stream(
+            state,
+            stream_mode="updates",
+            config=graph_monitoring_config(callbacks=[callback]),
+        ):
             for node_name, node_output in event.items():
                 if not node_output:
                     continue
@@ -93,12 +98,15 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     metrics.start()
     callback = LLMMetricsCallback(metrics)
     try:
-        result = get_chat_graph().invoke({
-            "messages": messages,
-            "patient_id": None,
-            "rekam_medis_id": None,
-            "token": request.token,
-        }, config={"callbacks": [callback]})
+        result = get_chat_graph().invoke(
+            {
+                "messages": messages,
+                "patient_id": None,
+                "rekam_medis_id": None,
+                "token": request.token,
+            },
+            config=graph_monitoring_config(callbacks=[callback]),
+        )
     except Exception:
         logger.exception("Chat invoke failed")
         raise HTTPException(
